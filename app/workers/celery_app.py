@@ -1,9 +1,15 @@
+import os
 from celery import Celery
+
+REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+
+broker_url = REDIS_URL
+backend_url = REDIS_URL.rstrip("/").rsplit("/", 1)[0] + "/1" if "/" in REDIS_URL else REDIS_URL
 
 celery_app = Celery(
     "strategos",
-    broker="redis://localhost:6379/0",
-    backend="redis://localhost:6379/1",
+    broker=broker_url,
+    backend=backend_url,
 )
 
 celery_app.conf.update(
