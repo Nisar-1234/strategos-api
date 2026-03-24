@@ -15,7 +15,6 @@ Key signals:
 """
 
 import logging
-from datetime import datetime, timezone, timedelta
 from app.workers.celery_app import celery_app
 from app.workers.base import CircuitBreaker, SignalNormalizer, fetch_json_sync
 from app.workers.store import store_signals
@@ -45,6 +44,11 @@ MONITORED_COUNTRIES = {
 def _ingest_cloudflare_radar() -> list[dict]:
     """Fetch internet traffic anomalies from Cloudflare Radar API."""
     signals = []
+    token = settings.CLOUDFLARE_RADAR_TOKEN
+    if not token:
+        logger.warning("CLOUDFLARE_RADAR_TOKEN not set, skipping Cloudflare Radar")
+        return signals
+
     if cb_cloudflare.is_open:
         logger.warning("Circuit breaker open for Cloudflare Radar, skipping")
         return signals
@@ -53,9 +57,9 @@ def _ingest_cloudflare_radar() -> list[dict]:
         for code, meta in MONITORED_COUNTRIES.items():
             try:
                 data = fetch_json_sync(
-                    f"https://api.cloudflare.com/client/v4/radar/http/summary/http_protocol",
+                    "https://api.cloudflare.com/client/v4/radar/http/summary/http_protocol",
                     params={"location": code, "dateRange": "1d"},
-                    headers={"Authorization": f"Bearer {settings.MAPBOX_TOKEN}"},
+                    headers={"Authorization": f"Bearer {token}"},
                 )
 
                 summary = data.get("result", {}).get("summary_0", {})
@@ -109,58 +113,77 @@ def _ingest_cloudflare_radar() -> list[dict]:
 
 
 def _ingest_ioda() -> list[dict]:
-    """Fetch BGP/active probing outage signals from IODA."""
+    """Fetch outage alert signals from IODA (no API key needed)."""
     signals = []
     if cb_ioda.is_open:
         logger.warning("Circuit breaker open for IODA, skipping")
         return signals
 
     try:
-        now = datetime.now(timezone.utc)
-        start = (now - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M")
-        end = now.strftime("%Y-%m-%dT%H:%M")
-
         for code, meta in MONITORED_COUNTRIES.items():
             try:
                 data = fetch_json_sync(
-                    f"https://api.ioda.inetintel.cc.gatech.edu/v2/signals/raw/country/{code}",
-                    params={"from": start, "until": end},
+                    "https://api.ioda.caida.org/v2/outages/alerts",
+                    params={
+                        "entityType": "country",
+                        "entityCode": code,
+                        "from": "now-1h",
+                        "until": "now",
+                    },
                 )
 
-                entries = data.get("data", [])
-                if not entries:
+                alerts = data.get("data", [])
+                if not alerts:
+                    signals.append(SignalNormalizer.normalize(
+                        layer="L10",
+                        source_name=f"IODA/{code}",
+                        raw_value=100.0,
+                        normalized_score=0.0,
+                        content=f"IODA: No outage alerts for {meta['name']} in last hour",
+                        confidence=0.90,
+                        alert_flag=False,
+                        alert_severity=None,
+                        raw_payload={
+                            "country_code": code,
+                            "country_name": meta["name"],
+                            "conflict": meta["conflict"],
+                            "alert_count": 0,
+                        },
+                    ))
                     continue
 
-                for entry in entries[-5:]:
-                    source_type = entry.get("datasource", "bgp")
-                    value = float(entry.get("value", 100))
+                for entry in alerts[-5:]:
+                    datasource = entry.get("datasource", "unknown")
+                    level = entry.get("level", "normal")
+                    condition = entry.get("condition", "")
 
-                    if value < 30:
+                    if level in ("critical", "severe"):
                         score = -0.9
                         alert = True
                         severity = "CRITICAL"
-                    elif value < 60:
+                    elif level == "warning":
                         score = -0.5
                         alert = True
                         severity = "WARNING"
                     else:
-                        score = 0.0
+                        score = -0.1
                         alert = False
                         severity = None
 
                     signals.append(SignalNormalizer.normalize(
                         layer="L10",
-                        source_name=f"IODA/{code}/{source_type}",
-                        raw_value=value,
+                        source_name=f"IODA/{code}/{datasource}",
+                        raw_value=0.0 if alert else 100.0,
                         normalized_score=score,
-                        content=f"IODA {source_type.upper()} for {meta['name']}: {value:.0f}% of baseline",
+                        content=f"IODA {datasource.upper()} alert for {meta['name']}: {level} — {condition}",
                         confidence=0.90,
                         alert_flag=alert,
                         alert_severity=severity,
                         raw_payload={
                             "country_code": code,
-                            "datasource": source_type,
-                            "value": value,
+                            "datasource": datasource,
+                            "level": level,
+                            "condition": condition,
                             "conflict": meta["conflict"],
                         },
                     ))

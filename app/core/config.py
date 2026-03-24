@@ -24,9 +24,11 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: str = ""
     OPENAI_API_KEY: str = ""
     NEWSAPI_KEY: str = ""
+    POLYGON_API_KEY: str = ""
     ALPHA_VANTAGE_KEY: str = ""
     METALS_API_KEY: str = ""
     OPEN_EXCHANGE_RATES_KEY: str = ""
+    CLOUDFLARE_RADAR_TOKEN: str = ""
     MAPBOX_TOKEN: str = ""
     PINECONE_API_KEY: str = ""
 
