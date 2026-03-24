@@ -123,13 +123,12 @@ def _ingest_ioda() -> list[dict]:
         for code, meta in MONITORED_COUNTRIES.items():
             try:
                 data = fetch_json_sync(
-                    "https://api.ioda.caida.org/v2/outages/alerts",
+                    f"https://api.ioda.caida.org/v2/outages/overall/country/{code}",
                     params={
-                        "entityType": "country",
-                        "entityCode": code,
                         "from": "now-1h",
                         "until": "now",
                     },
+                    timeout=10.0,
                 )
 
                 alerts = data.get("data", [])

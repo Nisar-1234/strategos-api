@@ -15,6 +15,7 @@ Key signals:
 """
 
 import logging
+import time
 from app.workers.celery_app import celery_app
 from app.workers.base import CircuitBreaker, SignalNormalizer, fetch_json_sync
 from app.workers.store import store_signals, get_latest_value
@@ -51,6 +52,7 @@ def _ingest_polygon_equities() -> list[dict]:
 
     try:
         for symbol, meta in TRACKED_SYMBOLS.items():
+            time.sleep(0.25)
             try:
                 data = fetch_json_sync(
                     f"https://api.polygon.io/v2/aggs/ticker/{symbol}/prev",
