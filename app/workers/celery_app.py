@@ -10,9 +10,18 @@ celery_app = Celery(
     "strategos",
     broker=broker_url,
     backend=backend_url,
+    include=[
+        "app.workers.l1_editorial",
+        "app.workers.l2_social",
+        "app.workers.l5_commodities",
+        "app.workers.l6_currency",
+        "app.workers.l7_equities",
+        "app.workers.l10_connectivity",
+    ],
 )
 
 celery_app.conf.update(
+    broker_connection_retry_on_startup=True,
     task_serializer="json",
     accept_content=["json"],
     result_serializer="json",
