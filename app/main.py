@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import get_settings
@@ -5,12 +6,19 @@ from app.api.v1 import health, signals, predictions, conflicts, game_theory, cha
 
 settings = get_settings()
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield
+
+
 app = FastAPI(
     title=settings.PROJECT_NAME,
     description="Multi-Source Ground Truth Intelligence Platform API",
     version="0.1.0",
     docs_url="/docs",
     redoc_url="/redoc",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -27,13 +35,3 @@ app.include_router(predictions.router, prefix=settings.API_V1_PREFIX, tags=["Pre
 app.include_router(conflicts.router, prefix=settings.API_V1_PREFIX, tags=["Conflicts"])
 app.include_router(game_theory.router, prefix=settings.API_V1_PREFIX, tags=["Game Theory"])
 app.include_router(chat.router, prefix=settings.API_V1_PREFIX, tags=["AI Chat"])
-
-
-@app.on_event("startup")
-async def startup_event():
-    pass
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    pass

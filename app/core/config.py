@@ -55,9 +55,7 @@ class Settings(BaseSettings):
         "L10": 1.2,  # Connectivity — network reality
     }
 
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
+    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 
 @lru_cache
