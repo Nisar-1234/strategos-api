@@ -25,6 +25,10 @@ celery_app.conf.update(
             "task": "app.workers.l1_editorial.ingest",
             "schedule": 300.0,  # 5 minutes
         },
+        "ingest-l2-social": {
+            "task": "app.workers.l2_social.ingest",
+            "schedule": 300.0,  # 5 minutes
+        },
         "ingest-l5-commodities": {
             "task": "app.workers.l5_commodities.ingest",
             "schedule": 60.0,  # 1 minute
