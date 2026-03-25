@@ -9,7 +9,7 @@ async def health_check():
     return {
         "status": "healthy",
         "service": "strategos-api",
-        "version": "0.1.0",
+        "version": "0.2.0",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "layers": {
             "L1_editorial": "ready",
