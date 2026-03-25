@@ -26,6 +26,10 @@ def store_signals(signals: list[dict]) -> int:
 
     with Session(_engine) as session:
         for sig in signals:
+            import json as _json
+            raw = sig.get("raw_payload")
+            payload_str = _json.dumps(raw) if raw else None
+
             session.execute(
                 text("""
                     INSERT INTO signals (id, layer, conflict_id, timestamp, raw_value,
@@ -33,7 +37,7 @@ def store_signals(signals: list[dict]) -> int:
                         source_name, content, raw_payload)
                     VALUES (:id, :layer, :conflict_id, :timestamp, :raw_value,
                         :normalized_score, :alert_flag, :alert_severity, :confidence,
-                        :source_name, :content, :raw_payload::jsonb)
+                        :source_name, :content, CAST(:raw_payload AS jsonb))
                     ON CONFLICT (id) DO NOTHING
                 """),
                 {
@@ -48,7 +52,7 @@ def store_signals(signals: list[dict]) -> int:
                     "confidence": sig.get("confidence", 0.5),
                     "source_name": sig["source_name"],
                     "content": sig.get("content"),
-                    "raw_payload": str(sig.get("raw_payload")) if sig.get("raw_payload") else None,
+                    "raw_payload": payload_str,
                 },
             )
         session.commit()
