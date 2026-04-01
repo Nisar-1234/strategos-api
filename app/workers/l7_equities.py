@@ -51,8 +51,9 @@ def _ingest_polygon_equities() -> list[dict]:
         return signals
 
     try:
-        for symbol, meta in TRACKED_SYMBOLS.items():
-            time.sleep(0.25)
+        for i, (symbol, meta) in enumerate(TRACKED_SYMBOLS.items()):
+            if i > 0:
+                time.sleep(13)
             try:
                 data = fetch_json_sync(
                     f"https://api.polygon.io/v2/aggs/ticker/{symbol}/prev",

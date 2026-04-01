@@ -88,3 +88,52 @@ async def signal_count():
         rows = result.fetchall()
         return {r.layer: r.cnt for r in rows}
     return {}
+
+
+@router.get("/signals/timeseries")
+async def signal_timeseries(
+    layer: str | None = Query(None, description="Filter by layer"),
+    days: int = Query(30, le=90),
+    bucket: str = Query("1d", description="Time bucket: 1h, 6h, 1d"),
+):
+    """Aggregated signal timeseries for trend analysis."""
+    interval_map = {"1h": "1 hour", "6h": "6 hours", "1d": "1 day"}
+    interval = interval_map.get(bucket, "1 day")
+
+    async for db in get_db():
+        query = f"""
+            SELECT
+                date_trunc('hour', timestamp) +
+                    (EXTRACT(EPOCH FROM date_trunc('hour', timestamp))::int %
+                     EXTRACT(EPOCH FROM INTERVAL '{interval}')::int) * INTERVAL '1 second' AS bucket_time,
+                COALESCE(layer, 'ALL') AS layer,
+                COUNT(*) AS signal_count,
+                AVG(normalized_score) AS avg_score,
+                AVG(confidence) AS avg_confidence,
+                SUM(CASE WHEN alert_flag THEN 1 ELSE 0 END) AS alert_count
+            FROM signals
+            WHERE timestamp >= NOW() - INTERVAL '1 day' * :days
+        """
+        params: dict = {"days": days}
+        if layer:
+            query += " AND layer = :layer"
+            params["layer"] = layer
+        query += f"""
+            GROUP BY bucket_time, layer
+            ORDER BY bucket_time ASC
+        """
+
+        result = await db.execute(text(query), params)
+        rows = result.fetchall()
+        return [
+            {
+                "timestamp": r.bucket_time.isoformat() if r.bucket_time else None,
+                "layer": r.layer,
+                "signal_count": r.signal_count,
+                "avg_score": round(r.avg_score, 4) if r.avg_score else 0,
+                "avg_confidence": round(r.avg_confidence, 4) if r.avg_confidence else 0,
+                "alert_count": r.alert_count,
+            }
+            for r in rows
+        ]
+    return []

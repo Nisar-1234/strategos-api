@@ -117,15 +117,33 @@ class SignalNormalizer:
 
 async def fetch_json(url: str, params: dict | None = None, headers: dict | None = None, timeout: float = 30.0) -> dict:
     """Shared HTTP GET with timeout and error handling."""
+    merged = {**DEFAULT_HEADERS, **(headers or {})}
     async with httpx.AsyncClient(timeout=timeout) as client:
-        resp = await client.get(url, params=params, headers=headers)
+        resp = await client.get(url, params=params, headers=merged)
         resp.raise_for_status()
         return resp.json()
+
+
+DEFAULT_HEADERS = {
+    "User-Agent": "Strategos/0.3 (Intelligence Platform; contact@strategos.app)",
+    "Accept": "application/json",
+}
 
 
 def fetch_json_sync(url: str, params: dict | None = None, headers: dict | None = None, timeout: float = 30.0) -> dict:
     """Synchronous version for Celery workers (which aren't async)."""
+    merged = {**DEFAULT_HEADERS, **(headers or {})}
     with httpx.Client(timeout=timeout) as client:
-        resp = client.get(url, params=params, headers=headers)
+        resp = client.get(url, params=params, headers=merged)
         resp.raise_for_status()
         return resp.json()
+
+
+def fetch_text_sync(url: str, params: dict | None = None, headers: dict | None = None, timeout: float = 30.0) -> str:
+    """Synchronous GET returning decoded text (CSV, etc.)."""
+    merged = {**DEFAULT_HEADERS, **(headers or {})}
+    merged["Accept"] = "text/plain,text/csv,*/*"
+    with httpx.Client(timeout=timeout) as client:
+        resp = client.get(url, params=params, headers=merged)
+        resp.raise_for_status()
+        return resp.text

@@ -1,0 +1,86 @@
+# Full stack for AWS EC2 (single host): Postgres + Redis + API + Celery worker + beat.
+# Usage: docker compose -f docker-compose.prod.yml --env-file .env up -d --build
+# Copy .env.example to .env and set API keys + CORS_ORIGINS before starting.
+
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: strategos-db
+    environment:
+      POSTGRES_USER: strategos
+      POSTGRES_PASSWORD: strategos
+      POSTGRES_DB: strategos
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U strategos"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: strategos-redis
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: strategos-api
+    ports:
+      - "127.0.0.1:8000:8000"
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://strategos:strategos@postgres:5432/strategos
+      DATABASE_URL_SYNC: postgresql://strategos:strategos@postgres:5432/strategos
+      REDIS_URL: redis://redis:6379/0
+      PORT: "8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: strategos-worker
+    command: celery -A app.workers.celery_app worker --loglevel=info
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://strategos:strategos@postgres:5432/strategos
+      DATABASE_URL_SYNC: postgresql://strategos:strategos@postgres:5432/strategos
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  beat:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: strategos-beat
+    command: celery -A app.workers.celery_app beat --loglevel=info
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://strategos:strategos@postgres:5432/strategos
+      DATABASE_URL_SYNC: postgresql://strategos:strategos@postgres:5432/strategos
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  pgdata:

@@ -1,20 +1,16 @@
 """
 L2 — Social Media Signal Layer
 
-Sources:
-  - Reddit: Geopolitics and conflict subreddits via public JSON API
-  - YouTube: Conflict-related video metrics via YouTube Data API
+Primary (BRD): Telegram channel monitoring via Telethon — critical for conflict zones.
+Supplementary: Reddit public JSON (no auth), optional future PRAW/X.
 
-Ingestion schedule: every 300 seconds (5 minutes) — via L1 beat schedule
+Ingestion schedule: every 300 seconds (5 minutes)
 Weight: 0.6 (high noise — requires bot/spam filtering)
-
-Key signals:
-  - Volume spikes in conflict-related subreddits
-  - Sentiment shifts in social discourse
-  - Viral conflict content indicating public attention
 """
 
+import asyncio
 import logging
+
 from app.workers.celery_app import celery_app
 from app.workers.base import CircuitBreaker, SignalNormalizer, fetch_json_sync
 from app.workers.store import store_signals
@@ -24,6 +20,7 @@ logger = logging.getLogger("strategos.l2")
 settings = get_settings()
 
 cb_reddit = CircuitBreaker("L2-Reddit")
+cb_telegram = CircuitBreaker("L2-Telegram")
 
 TRACKED_SUBREDDITS = [
     "worldnews",
@@ -42,14 +39,13 @@ CONFLICT_KEYWORDS = {
 
 
 def _estimate_relevance(title: str) -> float:
-    """Quick keyword-based relevance for filtering noise."""
     words = set(title.lower().split())
     hits = len(words & CONFLICT_KEYWORDS)
     return min(1.0, hits / 3.0)
 
 
 def _ingest_reddit() -> list[dict]:
-    """Fetch hot posts from geopolitics subreddits via Reddit JSON API (no auth needed)."""
+    """Supplementary: hot posts from geopolitics subreddits via public JSON API."""
     signals = []
     if cb_reddit.is_open:
         logger.warning("Circuit breaker open for Reddit, skipping")
@@ -99,6 +95,7 @@ def _ingest_reddit() -> list[dict]:
                             "upvote_ratio": upvote_ratio,
                             "relevance": relevance,
                             "url": d.get("url", ""),
+                            "role": "supplementary",
                         },
                     ))
 
@@ -114,10 +111,103 @@ def _ingest_reddit() -> list[dict]:
     return signals
 
 
+async def _ingest_telegram_async() -> list[dict]:
+    """Primary L2: recent messages from configured Telegram channels."""
+    from telethon import TelegramClient
+    from telethon.sessions import StringSession
+
+    signals: list[dict] = []
+    api_id = (settings.TELEGRAM_API_ID or "").strip()
+    api_hash = (settings.TELEGRAM_API_HASH or "").strip()
+    session_str = (settings.TELEGRAM_SESSION_STRING or "").strip()
+    raw_channels = (settings.TELEGRAM_CHANNELS or "").strip()
+
+    if not api_id or not api_hash:
+        logger.info("L2 Telegram skipped: set TELEGRAM_API_ID and TELEGRAM_API_HASH")
+        return signals
+    if not session_str:
+        logger.info(
+            "L2 Telegram skipped: set TELEGRAM_SESSION_STRING "
+            "(run: python scripts/telegram_session_setup.py)"
+        )
+        return signals
+
+    channels = [c.strip() for c in raw_channels.split(",") if c.strip()]
+    if not channels:
+        logger.info("L2 Telegram skipped: set TELEGRAM_CHANNELS (comma-separated @channels or IDs)")
+        return signals
+
+    client = TelegramClient(
+        StringSession(session_str),
+        int(api_id),
+        api_hash,
+    )
+    await client.connect()
+    if not await client.is_user_authorized():
+        logger.error("L2 Telegram: session not authorized — regenerate TELEGRAM_SESSION_STRING")
+        await client.disconnect()
+        return signals
+
+    try:
+        for ch in channels:
+            try:
+                async for msg in client.iter_messages(ch, limit=12):
+                    text = (msg.message or "").strip()
+                    if not text:
+                        continue
+                    relevance = _estimate_relevance(text)
+                    if relevance < 0.25:
+                        continue
+                    views = getattr(msg, "views", None) or 0
+                    engagement = min(1.0, (float(views) / 50000.0) + 0.2) if views else 0.35
+                    norm_score = (relevance * 0.55 + engagement * 0.45) - 0.45
+                    alert = relevance > 0.55 and engagement > 0.5
+                    peer = getattr(msg, "chat", None)
+                    label = getattr(peer, "username", None) or ch
+                    signals.append(SignalNormalizer.normalize(
+                        layer="L2",
+                        source_name=f"Telegram/{label}",
+                        raw_value=float(views or msg.id),
+                        normalized_score=max(-1.0, min(1.0, norm_score)),
+                        content=f"[TG @{label}] {text[:400]}",
+                        confidence=min(0.72, 0.45 + relevance * 0.35),
+                        alert_flag=alert,
+                        alert_severity="WARNING" if alert else None,
+                        raw_payload={
+                            "channel": ch,
+                            "message_id": msg.id,
+                            "views": views,
+                            "relevance": relevance,
+                            "role": "primary",
+                        },
+                    ))
+            except Exception as inner_e:
+                logger.warning("Telegram channel %s: %s", ch, inner_e)
+                continue
+    finally:
+        await client.disconnect()
+
+    return signals
+
+
+def _ingest_telegram() -> list[dict]:
+    if cb_telegram.is_open:
+        logger.warning("Circuit breaker open for Telegram, skipping")
+        return []
+    try:
+        out = asyncio.run(_ingest_telegram_async())
+        cb_telegram.record_success()
+        return out
+    except Exception as e:
+        cb_telegram.record_failure()
+        logger.error("L2 Telegram error: %s", e)
+        return []
+
+
 @celery_app.task(name="app.workers.l2_social.ingest")
 def ingest():
-    """L2 ingestion entrypoint."""
-    all_signals = _ingest_reddit()
+    """L2 ingestion: Telegram first (primary), then Reddit (supplementary)."""
+    all_signals = _ingest_telegram() + _ingest_reddit()
     if all_signals:
         count = store_signals(all_signals)
         logger.info("L2 Social: ingested %d signals", count)

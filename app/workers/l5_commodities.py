@@ -70,8 +70,9 @@ def _ingest_polygon_commodities() -> list[dict]:
 
     try:
         all_tickers = {**FOREX_TICKERS, **STOCK_TICKERS}
-        for ticker, meta in all_tickers.items():
-            time.sleep(0.25)
+        for i, (ticker, meta) in enumerate(all_tickers.items()):
+            if i > 0:
+                time.sleep(13)
             bar = _fetch_polygon_prev(ticker)
             if not bar:
                 continue

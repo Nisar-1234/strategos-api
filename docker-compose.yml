@@ -1,23 +1,9 @@
 version: "3.9"
 
 services:
-  api:
-    build: .
-    ports:
-      - "8000:8000"
-    env_file:
-      - .env
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    volumes:
-      - ./app:/code/app
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
-
-  db:
-    image: timescale/timescaledb:latest-pg16
+  postgres:
+    image: postgres:16-alpine
+    container_name: strategos-db
     environment:
       POSTGRES_USER: strategos
       POSTGRES_PASSWORD: strategos
@@ -29,42 +15,19 @@ services:
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U strategos"]
       interval: 5s
-      timeout: 5s
+      timeout: 3s
       retries: 5
 
   redis:
     image: redis:7-alpine
+    container_name: strategos-redis
     ports:
       - "6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
-      timeout: 5s
+      timeout: 3s
       retries: 5
-
-  celery-worker:
-    build: .
-    env_file:
-      - .env
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    volumes:
-      - ./app:/code/app
-    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=4
-
-  celery-beat:
-    build: .
-    env_file:
-      - .env
-    depends_on:
-      redis:
-        condition: service_healthy
-    volumes:
-      - ./app:/code/app
-    command: celery -A app.workers.celery_app beat --loglevel=info
 
 volumes:
   pgdata:

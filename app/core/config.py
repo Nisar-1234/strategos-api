@@ -29,8 +29,24 @@ class Settings(BaseSettings):
     METALS_API_KEY: str = ""
     OPEN_EXCHANGE_RATES_KEY: str = ""
     CLOUDFLARE_RADAR_TOKEN: str = ""
+    FRED_API_KEY: str = ""
+    GDELT_API_URL: str = "https://api.gdeltproject.org/api/v2"
+    X_BEARER_TOKEN: str = ""
+    REDDIT_CLIENT_ID: str = ""
+    REDDIT_CLIENT_SECRET: str = ""
+    TELEGRAM_API_ID: str = ""
+    TELEGRAM_API_HASH: str = ""
+    # Comma-separated @usernames or numeric channel IDs (primary L2 — conflict monitoring)
+    TELEGRAM_CHANNELS: str = ""
+    # From Telethon StringSession — generate once via scripts/telegram_session_setup.py
+    TELEGRAM_SESSION_STRING: str = ""
+    # NASA FIRMS area API — free registration: https://firms.modaps.eosdis.nasa.gov/api/map_key/
+    NASA_FIRMS_MAP_KEY: str = ""
     MAPBOX_TOKEN: str = ""
     PINECONE_API_KEY: str = ""
+    PINECONE_ENVIRONMENT: str = "us-east-1"
+    PINECONE_INDEX_NAME: str = "strategos-signals"
+    SENTRY_DSN: str = ""
 
     # Auth0
     AUTH0_DOMAIN: str = ""
