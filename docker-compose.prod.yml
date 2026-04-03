@@ -37,7 +37,7 @@ services:
       dockerfile: Dockerfile.api
     container_name: strategos-api
     ports:
-      - "127.0.0.1:8000:8000"
+      - "0.0.0.0:8000:8000"
     env_file:
       - .env
       - .env.ssm
@@ -57,7 +57,7 @@ services:
       context: .
       dockerfile: Dockerfile.api
     container_name: strategos-worker
-    command: celery -A app.workers.celery_app worker --loglevel=info
+    command: celery -A app.workers.celery_app worker --loglevel=info -Q celery,l1_editorial,l2_social,l3_shipping,l4_aviation,l5_commodities,l6_currency,l7_equities,l8_satellite,l9_economic,l10_connectivity,compute
     env_file:
       - .env
       - .env.ssm
