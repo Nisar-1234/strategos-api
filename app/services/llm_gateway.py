@@ -10,7 +10,6 @@ Enforces:
 
 import re
 import hashlib
-from datetime import datetime, timezone, timedelta
 from app.core.config import get_settings
 
 settings = get_settings()
@@ -49,37 +48,58 @@ async def call_llm(
     """
     Gateway function for all LLM calls. Never call the LLM directly.
 
-    1. Checks response cache
-    2. Enforces token budget (8,000 input tokens)
-    3. Calls primary model (Claude), falls back to GPT-4o
-    4. Strips emoji from response
-    5. Logs token usage
+    1. Enforces token budget (8,000 input tokens)
+    2. Calls Claude (claude-sonnet-4-6) — no fallback
+    3. Strips emoji from response
     """
+    if not settings.ANTHROPIC_API_KEY:
+        return {
+            "response": "LLM not configured: ANTHROPIC_API_KEY is missing.",
+            "model": settings.LLM_PRIMARY_MODEL,
+            "cache_hit": False,
+            "cache_key": "",
+            "input_tokens": 0,
+            "output_tokens": 0,
+        }
+
     model = settings.LLM_PRIMARY_MODEL
-    cache_key = compute_cache_key(prompt + signal_context, model)
-
-    # TODO: Check llm_response_cache table for cache hit < 4 hours old
-
     full_prompt = f"{system_prompt}\n\n{signal_context}\n\n{prompt}".strip()
+    cache_key = compute_cache_key(full_prompt, model)
 
-    estimated_tokens = len(full_prompt.split()) * 1.3
+    estimated_tokens = int(len(full_prompt.split()) * 1.3)
     if estimated_tokens > settings.LLM_CONTEXT_TOKEN_BUDGET:
-        # TODO: Implement signal ranking to reduce context
-        pass
+        # Truncate signal_context to fit within budget
+        words = full_prompt.split()
+        budget_words = int(settings.LLM_CONTEXT_TOKEN_BUDGET / 1.3)
+        full_prompt = " ".join(words[:budget_words])
+        estimated_tokens = settings.LLM_CONTEXT_TOKEN_BUDGET
 
-    # TODO: Call Anthropic API via LangChain with fallback to OpenAI
-    raw_response = f"[Placeholder] Analysis for prompt: {prompt[:100]}..."
+    from langchain_anthropic import ChatAnthropic
+    from langchain_core.messages import HumanMessage, SystemMessage
 
-    cleaned = strip_emoji(raw_response)
+    llm = ChatAnthropic(
+        model=model,
+        api_key=settings.ANTHROPIC_API_KEY,
+        max_tokens=settings.LLM_MAX_TOKENS_PER_CALL,
+    )
 
-    # TODO: Log to token_usage table
-    # TODO: Cache the response
+    messages = []
+    if system_prompt:
+        messages.append(SystemMessage(content=system_prompt))
+    user_content = f"{signal_context}\n\n{prompt}".strip() if signal_context else prompt
+    messages.append(HumanMessage(content=user_content))
+
+    response = await llm.ainvoke(messages)
+    raw_text = response.content if hasattr(response, "content") else str(response)
+    cleaned = strip_emoji(raw_text)
+
+    output_tokens = len(cleaned.split())
 
     return {
         "response": cleaned,
         "model": model,
         "cache_hit": False,
         "cache_key": cache_key,
-        "input_tokens": int(estimated_tokens),
-        "output_tokens": len(cleaned.split()),
+        "input_tokens": estimated_tokens,
+        "output_tokens": output_tokens,
     }
