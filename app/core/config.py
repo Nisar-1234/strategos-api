@@ -1,5 +1,33 @@
-from pydantic_settings import BaseSettings
+import os
 from functools import lru_cache
+from pathlib import Path
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _strategos_env_files() -> tuple[str, ...]:
+    """
+    Load env in order; later files override earlier (local .env wins over shared credentials).
+
+    Shared file (gitignored): <parent-of-strategos-api>/credentials/strategos-api.env
+    e.g. intelligence/credentials/strategos-api.env when API is at intelligence/strategos-api/
+
+    Optional: STRATEGOS_EXTRA_ENV_FILE=/absolute/path.env (highest priority).
+    """
+    api_root = Path(__file__).resolve().parents[2]
+    paths: list[str] = []
+    shared = api_root.parent / "credentials" / "strategos-api.env"
+    if shared.is_file():
+        paths.append(str(shared))
+    local = api_root / ".env"
+    if local.is_file():
+        paths.append(str(local))
+    extra = (os.environ.get("STRATEGOS_EXTRA_ENV_FILE") or "").strip()
+    if extra and Path(extra).is_file():
+        paths.append(extra)
+    if not paths:
+        paths.append(str(local))
+    return tuple(paths)
 
 
 class Settings(BaseSettings):
@@ -73,7 +101,10 @@ class Settings(BaseSettings):
         "L10": 1.2,  # Connectivity — network reality
     }
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    model_config = SettingsConfigDict(
+        env_file=_strategos_env_files(),
+        env_file_encoding="utf-8",
+    )
 
 
 @lru_cache

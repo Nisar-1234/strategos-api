@@ -1,6 +1,8 @@
 # Full stack for AWS EC2 (single host): Postgres + Redis + API + Celery worker + beat.
 # Usage: docker compose -f docker-compose.prod.yml --env-file .env up -d --build
-# Copy .env.example to .env and set API keys + CORS_ORIGINS before starting.
+# Copy .env.example to .env for non-secrets. Optional: SSM → .env.ssm (see SSM_ENV_EC2.md).
+#   python3 scripts/ec2-pull-ssm-env.py --output .env.ssm
+# Create empty .env.ssm if not using SSM yet:  printf '\n' > .env.ssm
 
 version: "3.9"
 
@@ -36,7 +38,9 @@ services:
     container_name: strategos-api
     ports:
       - "127.0.0.1:8000:8000"
-    env_file: .env
+    env_file:
+      - .env
+      - .env.ssm
     environment:
       DATABASE_URL: postgresql+asyncpg://strategos:strategos@postgres:5432/strategos
       DATABASE_URL_SYNC: postgresql://strategos:strategos@postgres:5432/strategos
@@ -54,7 +58,9 @@ services:
       dockerfile: Dockerfile.api
     container_name: strategos-worker
     command: celery -A app.workers.celery_app worker --loglevel=info
-    env_file: .env
+    env_file:
+      - .env
+      - .env.ssm
     environment:
       DATABASE_URL: postgresql+asyncpg://strategos:strategos@postgres:5432/strategos
       DATABASE_URL_SYNC: postgresql://strategos:strategos@postgres:5432/strategos
@@ -71,7 +77,9 @@ services:
       dockerfile: Dockerfile.api
     container_name: strategos-beat
     command: celery -A app.workers.celery_app beat --loglevel=info
-    env_file: .env
+    env_file:
+      - .env
+      - .env.ssm
     environment:
       DATABASE_URL: postgresql+asyncpg://strategos:strategos@postgres:5432/strategos
       DATABASE_URL_SYNC: postgresql://strategos:strategos@postgres:5432/strategos
