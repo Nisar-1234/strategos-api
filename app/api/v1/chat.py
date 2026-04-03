@@ -6,6 +6,7 @@ import json
 
 from app.core.database import get_db
 from app.core.config import get_settings
+from app.services.llm_gateway import strip_emoji
 
 router = APIRouter()
 settings = get_settings()
@@ -134,7 +135,7 @@ async def _call_llm(system_prompt: str, user_message: str) -> str:
                 {"role": "system", "content": system_prompt},
                 {"role": "human", "content": user_message},
             ])
-            return response.content
+            return strip_emoji(response.content)
         except Exception as e:
             pass
 
@@ -150,7 +151,7 @@ async def _call_llm(system_prompt: str, user_message: str) -> str:
                 {"role": "system", "content": system_prompt},
                 {"role": "human", "content": user_message},
             ])
-            return response.content
+            return strip_emoji(response.content)
         except Exception:
             pass
 
