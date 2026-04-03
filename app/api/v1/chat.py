@@ -33,7 +33,7 @@ class ChatResponse(BaseModel):
     session_id: str
 
 
-async def _gather_signal_context(conflict_id: str | None = None, limit: int = 100) -> tuple[list[dict], list[SourceCitation]]:
+async def _gather_signal_context(limit: int = 100) -> tuple[list[dict], list[SourceCitation]]:
     """Pull recent signals from DB to feed as context to the LLM."""
     signals = []
     sources_seen: dict[str, SourceCitation] = {}
@@ -42,7 +42,7 @@ async def _gather_signal_context(conflict_id: str | None = None, limit: int = 10
         result = await db.execute(
             text("""
                 SELECT source_name, layer, normalized_score, confidence, alert_flag,
-                       raw_value, timestamp
+                       raw_value, content, timestamp
                 FROM signals
                 WHERE timestamp >= NOW() - INTERVAL '48 hours'
                 ORDER BY timestamp DESC
@@ -58,7 +58,8 @@ async def _gather_signal_context(conflict_id: str | None = None, limit: int = 10
                 "score": round(r.normalized_score, 2),
                 "confidence": round(r.confidence, 2),
                 "alert": r.alert_flag,
-                "value": str(r.raw_value)[:200],
+                "value": str(r.raw_value)[:100] if r.raw_value is not None else None,
+                "content": r.content[:200] if r.content else None,
                 "time": r.timestamp.isoformat(),
             })
             key = f"{r.source_name}:{r.layer}"
@@ -89,83 +90,87 @@ async def _get_convergence(conflict_id: str | None) -> float | None:
     return None
 
 
-def _build_system_prompt(signals: list[dict], conflict_name: str | None) -> str:
-    signal_summary = json.dumps(signals[:30], indent=2)
-    context = f" regarding {conflict_name}" if conflict_name else ""
-    return f"""You are STRATEGOS, an AI geopolitical intelligence analyst. 
-You provide concise, data-driven analysis{context} based on real signal data from 10 independent layers:
-L1=News, L2=Social, L3=Shipping, L4=Aviation, L5=Commodities, L6=Currency, L7=Equity, L8=Satellite, L9=Economic, L10=Connectivity.
+def _build_system_prompt(signals: list[dict], conflict_name: str | None, conflict_region: str | None) -> str:
+    # Summarise which layers have data in this snapshot
+    layers_present = sorted(set(s["layer"] for s in signals))
+    all_layers = ["L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8", "L9", "L10"]
+    layer_status = ", ".join(
+        f"{l}:{'ACTIVE' if l in layers_present else 'NO DATA'}" for l in all_layers
+    )
 
-Recent signal data (last 48 hours):
+    context_parts = []
+    if conflict_name:
+        context_parts.append(f"Conflict: {conflict_name}")
+    if conflict_region:
+        context_parts.append(f"Region: {conflict_region}")
+    context_str = " | ".join(context_parts)
+    focus_line = f"\nFocus context: {context_str}" if context_str else ""
+
+    signal_summary = json.dumps(signals[:40], indent=2)
+
+    return f"""You are STRATEGOS, an AI geopolitical intelligence analyst.
+You provide concise, data-driven analysis based on real signal data from 10 independent layers:
+L1=Editorial News, L2=Social Media, L3=Shipping/Maritime, L4=Aviation, L5=Commodities,
+L6=Currency/FX, L7=Equities, L8=Satellite/Remote Sensing, L9=Economic Indicators, L10=Internet Connectivity.
+{focus_line}
+
+Layer data availability: {layer_status}
+
+Recent signal data (last 48 hours) — each signal includes content (human-readable description), score (-1 to +1), and alert flag:
 {signal_summary}
 
 Rules:
-- Always cite which signal layers support your conclusions.
-- Provide probability estimates when asked about outcomes.
-- Be direct and analytical. Avoid speculation beyond what signals support.
-- Mention conflicting signals when they exist.
-- If data is insufficient, say so explicitly.
+- Cite which layers support your conclusions. If a layer shows NO DATA, say so explicitly.
+- Scores near +1 = escalation pressure. Near -1 = de-escalation. Near 0 = neutral/stable.
+- Use the content field — it contains the actual readable description of each signal.
+- Provide probability estimates when asked.
+- Be direct. Acknowledge data gaps honestly — do not fabricate from missing layers.
+- Mention alert signals (alert: true) specifically — they represent statistically significant anomalies.
 """
 
 
-async def _get_conflict_name(conflict_id: str | None) -> str | None:
+async def _get_conflict_info(conflict_id: str | None) -> tuple[str | None, str | None]:
+    """Returns (name, region) for a conflict."""
     if not conflict_id:
-        return None
+        return None, None
     async for db in get_db():
         result = await db.execute(
-            text("SELECT name FROM conflicts WHERE id = :cid"),
+            text("SELECT name, region FROM conflicts WHERE id = :cid"),
             {"cid": conflict_id},
         )
         row = result.fetchone()
-        return row.name if row else None
-    return None
+        if row:
+            return row.name, row.region
+        return None, None
+    return None, None
 
 
 async def _call_llm(system_prompt: str, user_message: str) -> str:
-    """Call LLM via LangChain. Falls back gracefully if no API key."""
-    if settings.ANTHROPIC_API_KEY:
-        try:
-            from langchain_anthropic import ChatAnthropic
-            llm = ChatAnthropic(
-                model=settings.LLM_PRIMARY_MODEL,
-                api_key=settings.ANTHROPIC_API_KEY,
-                max_tokens=settings.LLM_MAX_TOKENS_PER_CALL,
-            )
-            response = await llm.ainvoke([
-                {"role": "system", "content": system_prompt},
-                {"role": "human", "content": user_message},
-            ])
-            return strip_emoji(response.content)
-        except Exception as e:
-            pass
+    """Call Claude. Returns signal summary fallback if no API key."""
+    if not settings.ANTHROPIC_API_KEY:
+        return _generate_signal_summary()
 
-    if settings.OPENAI_API_KEY:
-        try:
-            from langchain_openai import ChatOpenAI
-            llm = ChatOpenAI(
-                model=settings.LLM_FALLBACK_MODEL,
-                api_key=settings.OPENAI_API_KEY,
-                max_tokens=settings.LLM_MAX_TOKENS_PER_CALL,
-            )
-            response = await llm.ainvoke([
-                {"role": "system", "content": system_prompt},
-                {"role": "human", "content": user_message},
-            ])
-            return strip_emoji(response.content)
-        except Exception:
-            pass
-
-    return _generate_signal_summary(system_prompt, user_message)
+    try:
+        from langchain_anthropic import ChatAnthropic
+        llm = ChatAnthropic(
+            model=settings.LLM_PRIMARY_MODEL,
+            api_key=settings.ANTHROPIC_API_KEY,
+            max_tokens=settings.LLM_MAX_TOKENS_PER_CALL,
+        )
+        response = await llm.ainvoke([
+            {"role": "system", "content": system_prompt},
+            {"role": "human", "content": user_message},
+        ])
+        return strip_emoji(response.content)
+    except Exception:
+        return _generate_signal_summary()
 
 
-def _generate_signal_summary(system_prompt: str, user_message: str) -> str:
-    """Generate a useful response directly from signal data when no LLM key is configured."""
+def _generate_signal_summary() -> str:
     return (
-        "**Signal-Based Analysis** (LLM not configured — raw signal summary):\n\n"
-        "I've aggregated the latest signals from all available layers. "
-        "Configure ANTHROPIC_API_KEY or OPENAI_API_KEY in your .env for full AI analysis.\n\n"
-        "The raw signal data shows recent activity across multiple layers. "
-        "Check the sources panel for individual layer readings."
+        "Signal-Based Analysis (LLM not configured):\n\n"
+        "ANTHROPIC_API_KEY is not set. Configure it in your .env or SSM to enable AI analysis.\n\n"
+        "Raw signal data is available via GET /api/v1/signals."
     )
 
 
@@ -173,17 +178,17 @@ def _generate_signal_summary(system_prompt: str, user_message: str) -> str:
 async def chat_analysis(request: ChatRequest):
     """
     Natural language geopolitical query interface.
-    AI responses are powered by all 10 signal layers.
-    Every source citation includes its bias score.
+    AI responses are grounded in all 10 signal layers.
+    Every source citation includes its bias/confidence score.
     """
     session_id = request.session_id or str(uuid4())
     conflict_id_str = str(request.conflict_id) if request.conflict_id else None
 
-    conflict_name = await _get_conflict_name(conflict_id_str)
-    signals, sources = await _gather_signal_context(conflict_id_str)
+    conflict_name, conflict_region = await _get_conflict_info(conflict_id_str)
+    signals, sources = await _gather_signal_context()
     convergence = await _get_convergence(conflict_id_str)
 
-    system_prompt = _build_system_prompt(signals, conflict_name)
+    system_prompt = _build_system_prompt(signals, conflict_name, conflict_region)
     analysis = await _call_llm(system_prompt, request.message)
 
     n_signals = len(signals)
