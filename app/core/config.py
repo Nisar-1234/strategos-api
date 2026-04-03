@@ -1,7 +1,10 @@
+import json
 import os
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -85,7 +88,22 @@ class Settings(BaseSettings):
     CORS_ORIGINS: list[str] = [
         "http://localhost:3000",
         "http://localhost:3001",
+        "https://main.drvv157cwdx9a.amplifyapp.com",
     ]
+
+    @field_validator("CORS_ORIGINS", mode="before")
+    @classmethod
+    def parse_cors_origins(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            v = v.strip()
+            try:
+                parsed = json.loads(v)
+                if isinstance(parsed, list):
+                    return parsed
+            except (json.JSONDecodeError, ValueError):
+                pass
+            return [s.strip() for s in v.split(",") if s.strip()]
+        return v
 
     # Convergence weights
     LAYER_WEIGHTS: dict[str, float] = {
