@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import get_settings
 from app.api.v1 import health, signals, predictions, conflicts, game_theory, chat
 from app.api.v1 import settings as settings_router
+from app.api.v1 import ws as ws_router
 
 app_settings = get_settings()
 
@@ -20,7 +21,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title=app_settings.PROJECT_NAME,
     description="Multi-Source Ground Truth Intelligence Platform API",
-    version="0.3.0",
+    version="0.4.0",
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan,
@@ -41,3 +42,4 @@ app.include_router(conflicts.router, prefix=app_settings.API_V1_PREFIX, tags=["C
 app.include_router(game_theory.router, prefix=app_settings.API_V1_PREFIX, tags=["Game Theory"])
 app.include_router(chat.router, prefix=app_settings.API_V1_PREFIX, tags=["AI Chat"])
 app.include_router(settings_router.router, prefix=app_settings.API_V1_PREFIX, tags=["Settings"])
+app.include_router(ws_router.router, prefix=app_settings.API_V1_PREFIX, tags=["WebSocket"])

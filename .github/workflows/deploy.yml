@@ -1,0 +1,39 @@
+name: API Deploy
+
+on:
+  push:
+    branches: [master]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    needs: []   # runs after push; pair with ci.yml if you want sequential
+
+    steps:
+      - name: Deploy to EC2
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: 44.199.183.171
+          username: ec2-user
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            set -e
+            cd ~/strategos-api
+
+            echo "==> Pulling latest code"
+            git pull origin master
+
+            echo "==> Refreshing SSM secrets"
+            export AWS_REGION=us-east-1
+            python3 scripts/ec2-pull-ssm-env.py --output .env.ssm || printf '\n' > .env.ssm
+
+            echo "==> Rebuilding and restarting containers"
+            docker compose -f docker-compose.prod.yml --env-file .env up -d --build api worker beat
+
+            echo "==> Waiting for API to come up"
+            sleep 20
+
+            echo "==> Health check"
+            curl -fsS http://localhost:8000/api/v1/health | python3 -c "import sys,json; d=json.load(sys.stdin); print('status:', d['status']); sys.exit(0 if d['status'] in ('healthy','degraded') else 1)"
+
+            echo "==> Deploy complete"

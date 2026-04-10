@@ -1,17 +1,22 @@
 """
 Convergence Score Worker
 
-Computes a composite convergence score (0-10) for each conflict
-by aggregating signals from all available layers.
+Computes a composite convergence score (0-10) for each active conflict
+by aggregating signals from all available layers in the last 6 hours.
 
-The convergence score represents how many independent signal layers
-are pointing in the same direction (convergent = high score).
+Score formula:
+  weighted_avg = SUM(layer_weight × avg_normalized_score × avg_confidence) / SUM(weights)
+  alignment    = fraction of layers pointing in the same direction
+  alert_boost  = min(2.0, count_of_alert_signals × 0.2)
+  raw = |weighted_avg| × 5 + alignment × 3 + alert_boost
+  final = clamp(raw, 0, 10)
 
-Runs every 5 minutes via Celery Beat.
+Runs every 5 minutes via Celery Beat. Also triggered on-demand via Redis
+'convergence_trigger:{conflict_id}' channel when store.py writes new signals.
 """
 
-import logging
 import json
+import logging
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -27,36 +32,51 @@ settings = get_settings()
 _engine = create_engine(settings.DATABASE_URL_SYNC, pool_size=3, max_overflow=1)
 
 
-def _compute_for_conflict(session: Session, conflict_id: str) -> dict | None:
+def _compute_for_conflict(session: Session, conflict_id: str, conflict_name: str) -> dict | None:
     """
-    Compute convergence score for one conflict.
-    
-    Algorithm:
-    1. Pull latest signals per layer (last 6 hours)
-    2. For each layer, compute average normalized_score
-    3. Weight by LAYER_WEIGHTS
-    4. Measure directional alignment across layers
-    5. Scale to 0-10
+    Compute convergence score for one specific conflict using only its signals.
     """
     result = session.execute(
         text("""
-            SELECT layer, 
-                   AVG(normalized_score) AS avg_score,
-                   AVG(confidence) AS avg_confidence,
-                   COUNT(*) AS signal_count,
-                   SUM(CASE WHEN alert_flag THEN 1 ELSE 0 END) AS alert_count
+            SELECT layer,
+                   AVG(normalized_score)  AS avg_score,
+                   AVG(confidence)        AS avg_confidence,
+                   COUNT(*)               AS signal_count,
+                   SUM(CASE WHEN alert_flag THEN 1 ELSE 0 END) AS alert_count,
+                   AVG(deviation_pct)     AS avg_deviation
             FROM signals
-            WHERE timestamp >= NOW() - INTERVAL '6 hours'
+            WHERE conflict_id = :cid
+              AND timestamp >= NOW() - INTERVAL '6 hours'
             GROUP BY layer
         """),
+        {"cid": conflict_id},
     )
     rows = result.fetchall()
 
     if not rows:
+        # Fall back: any signals in last 6 hours from this layer (no conflict tag)
+        result = session.execute(
+            text("""
+                SELECT layer,
+                       AVG(normalized_score)  AS avg_score,
+                       AVG(confidence)        AS avg_confidence,
+                       COUNT(*)               AS signal_count,
+                       SUM(CASE WHEN alert_flag THEN 1 ELSE 0 END) AS alert_count,
+                       AVG(deviation_pct)     AS avg_deviation
+                FROM signals
+                WHERE conflict_id IS NULL
+                  AND timestamp >= NOW() - INTERVAL '6 hours'
+                GROUP BY layer
+            """),
+        )
+        rows = result.fetchall()
+
+    if not rows:
+        logger.debug("No signals for conflict %s (%s)", conflict_name, conflict_id)
         return None
 
     layer_data = {}
-    weighted_scores = []
+    weighted_scores: list[float] = []
     total_weight = 0.0
 
     for r in rows:
@@ -66,6 +86,7 @@ def _compute_for_conflict(session: Session, conflict_id: str) -> dict | None:
             "confidence": round(r.avg_confidence, 4),
             "signal_count": r.signal_count,
             "alert_count": r.alert_count,
+            "avg_deviation": round(r.avg_deviation, 2) if r.avg_deviation else 0.0,
             "weight": weight,
         }
         weighted_scores.append(r.avg_score * weight * r.avg_confidence)
@@ -84,7 +105,8 @@ def _compute_for_conflict(session: Session, conflict_id: str) -> dict | None:
     dominant = max(n_negative, n_positive, n_neutral)
     alignment = dominant / max(len(scores), 1)
 
-    alert_boost = min(2.0, sum(d["alert_count"] for d in layer_data.values()) * 0.2)
+    total_alerts = sum(d["alert_count"] for d in layer_data.values())
+    alert_boost = min(2.0, total_alerts * 0.2)
     raw_score = abs(weighted_avg) * 5 + alignment * 3 + alert_boost
 
     convergence = round(max(0.0, min(10.0, raw_score)), 1)
@@ -98,7 +120,7 @@ def _compute_for_conflict(session: Session, conflict_id: str) -> dict | None:
 
 @celery_app.task(name="app.workers.convergence_worker.compute_all")
 def compute_all():
-    """Compute convergence scores for all active conflicts."""
+    """Compute convergence scores for all active/monitoring conflicts."""
     now = datetime.now(timezone.utc)
 
     with Session(_engine) as session:
@@ -108,7 +130,7 @@ def compute_all():
 
         count = 0
         for conflict in conflicts:
-            result = _compute_for_conflict(session, str(conflict.id))
+            result = _compute_for_conflict(session, str(conflict.id), conflict.name)
             if result is None:
                 continue
 
@@ -125,9 +147,23 @@ def compute_all():
                     "layers": json.dumps(result["layer_contributions"]),
                 },
             )
+            _publish_convergence(result["conflict_id"], result["score"])
             count += 1
 
         session.commit()
 
     logger.info("Computed convergence scores for %d conflicts", count)
     return {"computed": count}
+
+
+def _publish_convergence(conflict_id: str, score: float) -> None:
+    """Notify WebSocket clients that the convergence score updated."""
+    try:
+        import redis as _redis
+        r = _redis.from_url(settings.REDIS_URL, socket_timeout=1, decode_responses=True)
+        r.publish(
+            f"ws:convergence:{conflict_id}",
+            json.dumps({"conflict_id": conflict_id, "score": score}),
+        )
+    except Exception:
+        pass

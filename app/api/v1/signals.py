@@ -16,43 +16,64 @@ class SignalResponse(BaseModel):
     normalized_score: float
     alert_flag: bool
     alert_severity: str | None
+    deviation_pct: float | None = None
     confidence: float
     source_name: str
     content: str | None
+    latitude: float | None = None
+    longitude: float | None = None
+
+
+class LayerStatus(BaseModel):
+    layer: str
+    status: str          # ACTIVE | DEGRADED | OFFLINE
+    last_signal_at: datetime | None
+    signal_count_24h: int
 
 
 @router.get("/signals", response_model=list[SignalResponse])
 async def list_signals(
     layer: str | None = Query(None, description="Filter by layer (L1-L10)"),
-    alert_only: bool = Query(False, description="Show only alert signals"),
+    conflict_id: str | None = Query(None),
+    alert_only: bool = Query(False, description="Show only ALERT/WATCH signals"),
     limit: int = Query(50, le=200),
 ):
-    """List signals across all layers with optional filters."""
+    """List signals with optional filters."""
     async for db in get_db():
-        query = "SELECT id, layer, conflict_id, timestamp, normalized_score, alert_flag, alert_severity, confidence, source_name, content FROM signals"
         conditions = []
         params: dict = {}
 
         if layer:
             conditions.append("layer = :layer")
             params["layer"] = layer
+        if conflict_id:
+            conditions.append("conflict_id = :conflict_id")
+            params["conflict_id"] = conflict_id
         if alert_only:
-            conditions.append("alert_flag = true")
+            conditions.append("alert_severity IN ('ALERT', 'WATCH')")
 
-        if conditions:
-            query += " WHERE " + " AND ".join(conditions)
-        query += " ORDER BY timestamp DESC LIMIT :limit"
+        where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
         params["limit"] = limit
 
-        result = await db.execute(text(query), params)
+        result = await db.execute(
+            text(f"""
+                SELECT id, layer, conflict_id, timestamp, normalized_score,
+                       alert_flag, alert_severity, deviation_pct, confidence,
+                       source_name, content, latitude, longitude
+                FROM signals{where}
+                ORDER BY timestamp DESC LIMIT :limit
+            """),
+            params,
+        )
         rows = result.fetchall()
         return [
             SignalResponse(
                 id=r.id, layer=r.layer, conflict_id=r.conflict_id,
                 timestamp=r.timestamp, normalized_score=r.normalized_score,
                 alert_flag=r.alert_flag, alert_severity=r.alert_severity,
-                confidence=r.confidence, source_name=r.source_name,
-                content=r.content,
+                deviation_pct=r.deviation_pct, confidence=r.confidence,
+                source_name=r.source_name, content=r.content,
+                latitude=r.latitude, longitude=r.longitude,
             )
             for r in rows
         ]
@@ -64,15 +85,25 @@ async def signal_feed(limit: int = Query(20, le=100)):
     """Real-time signal feed for dashboard."""
     async for db in get_db():
         result = await db.execute(
-            text("SELECT id, layer, source_name, content, timestamp, alert_flag, alert_severity, confidence FROM signals ORDER BY timestamp DESC LIMIT :limit"),
+            text("""
+                SELECT id, layer, source_name, content, timestamp,
+                       alert_flag, alert_severity, deviation_pct, confidence
+                FROM signals
+                ORDER BY timestamp DESC LIMIT :limit
+            """),
             {"limit": limit},
         )
         rows = result.fetchall()
         return [
             {
-                "id": str(r.id), "layer": r.layer, "source_name": r.source_name,
-                "content": r.content, "timestamp": r.timestamp.isoformat(),
-                "alert_flag": r.alert_flag, "alert_severity": r.alert_severity,
+                "id": str(r.id),
+                "layer": r.layer,
+                "source_name": r.source_name,
+                "content": r.content,
+                "timestamp": r.timestamp.isoformat(),
+                "alert_flag": r.alert_flag,
+                "alert_severity": r.alert_severity,
+                "deviation_pct": r.deviation_pct,
                 "confidence": r.confidence,
             }
             for r in rows
@@ -88,6 +119,66 @@ async def signal_count():
         rows = result.fetchall()
         return {r.layer: r.cnt for r in rows}
     return {}
+
+
+@router.get("/signals/layer-status", response_model=list[LayerStatus])
+async def layer_status():
+    """
+    Per-layer ingestion health: status, last signal time, 24h count.
+    ACTIVE = signal in last 15 min (or 30 min for slow layers like L8/L9)
+    DEGRADED = signal in last 2 hours
+    OFFLINE = no signal in 2 hours
+    """
+    slow_layers = {"L8", "L9", "L3", "L4"}
+    active_threshold = {
+        "default": 15 * 60,
+        "slow": 30 * 60,
+    }
+
+    async for db in get_db():
+        result = await db.execute(
+            text("""
+                SELECT layer,
+                       MAX(timestamp)  AS last_signal_at,
+                       COUNT(*)        AS signal_count_24h
+                FROM signals
+                WHERE timestamp >= NOW() - INTERVAL '24 hours'
+                GROUP BY layer
+            """),
+        )
+        rows = result.fetchall()
+
+        from datetime import timezone
+        now = datetime.now(timezone.utc)
+        by_layer: dict[str, dict] = {}
+        for r in rows:
+            age_s = (now - r.last_signal_at.replace(tzinfo=timezone.utc)).total_seconds()
+            threshold = active_threshold["slow"] if r.layer in slow_layers else active_threshold["default"]
+            if age_s <= threshold:
+                status = "ACTIVE"
+            elif age_s <= 7200:
+                status = "DEGRADED"
+            else:
+                status = "OFFLINE"
+            by_layer[r.layer] = {
+                "layer": r.layer,
+                "status": status,
+                "last_signal_at": r.last_signal_at,
+                "signal_count_24h": r.signal_count_24h,
+            }
+
+        all_layers = ["L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8", "L9", "L10"]
+        statuses = []
+        for layer in all_layers:
+            if layer in by_layer:
+                statuses.append(LayerStatus(**by_layer[layer]))
+            else:
+                statuses.append(LayerStatus(
+                    layer=layer, status="OFFLINE",
+                    last_signal_at=None, signal_count_24h=0,
+                ))
+        return statuses
+    return []
 
 
 @router.get("/signals/timeseries")
@@ -118,10 +209,7 @@ async def signal_timeseries(
         if layer:
             query += " AND layer = :layer"
             params["layer"] = layer
-        query += f"""
-            GROUP BY bucket_time, layer
-            ORDER BY bucket_time ASC
-        """
+        query += " GROUP BY bucket_time, layer ORDER BY bucket_time ASC"
 
         result = await db.execute(text(query), params)
         rows = result.fetchall()
