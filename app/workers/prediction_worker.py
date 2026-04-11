@@ -56,8 +56,25 @@ def _compute_prediction(session: Session, conflict_id: str) -> dict | None:
                    COUNT(DISTINCT layer) AS n_layers
             FROM signals
             WHERE timestamp >= NOW() - INTERVAL '24 hours'
+              AND conflict_id = :cid
         """),
+        {"cid": conflict_id},
     ).fetchone()
+
+    # Fall back to global pool if no conflict-tagged signals yet
+    if not sig_result or sig_result.total == 0:
+        sig_result = session.execute(
+            text("""
+                SELECT AVG(normalized_score) AS avg_score,
+                       STDDEV(normalized_score) AS std_score,
+                       AVG(confidence) AS avg_conf,
+                       COUNT(*) AS total,
+                       SUM(CASE WHEN alert_flag THEN 1 ELSE 0 END) AS alerts,
+                       COUNT(DISTINCT layer) AS n_layers
+                FROM signals
+                WHERE timestamp >= NOW() - INTERVAL '24 hours'
+            """),
+        ).fetchone()
 
     if not sig_result or sig_result.total == 0:
         return None

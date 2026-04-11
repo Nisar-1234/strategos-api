@@ -4,6 +4,7 @@ from datetime import datetime
 from uuid import UUID
 from sqlalchemy import text
 from app.core.database import get_db
+from typing import Optional
 
 router = APIRouter()
 
@@ -15,6 +16,20 @@ class ConflictResponse(BaseModel):
     status: str
     description: str | None
     created_at: datetime
+
+
+class ConflictSignalResponse(BaseModel):
+    id: UUID
+    layer: str
+    conflict_id: UUID | None = None
+    timestamp: datetime
+    normalized_score: float
+    alert_flag: bool
+    alert_severity: str | None
+    confidence: float
+    source_name: str
+    content: str | None
+    deviation_pct: float | None = None
 
 
 @router.get("/conflicts", response_model=list[ConflictResponse])
@@ -98,3 +113,47 @@ async def get_convergence_history(conflict_id: UUID, days: int = Query(30, le=90
             ],
         }
     return {"conflict_id": str(conflict_id), "scores": []}
+
+
+@router.get("/conflicts/{conflict_id}/signals", response_model=list[ConflictSignalResponse])
+async def get_conflict_signals(
+    conflict_id: UUID,
+    layer: Optional[str] = Query(None, description="Filter by layer"),
+    alert_only: bool = Query(False),
+    limit: int = Query(50, le=200),
+):
+    """Get signals linked to a specific conflict."""
+    async for db in get_db():
+        conditions = ["conflict_id = :cid"]
+        params: dict = {"cid": str(conflict_id), "limit": limit}
+
+        if layer:
+            conditions.append("layer = :layer")
+            params["layer"] = layer
+        if alert_only:
+            conditions.append("alert_severity IN ('ALERT', 'WATCH', 'CRITICAL', 'WARNING')")
+
+        where = " AND ".join(conditions)
+        result = await db.execute(
+            text(f"""
+                SELECT id, layer, conflict_id, timestamp, normalized_score,
+                       alert_flag, alert_severity, confidence, source_name,
+                       content, deviation_pct
+                FROM signals
+                WHERE {where}
+                ORDER BY timestamp DESC LIMIT :limit
+            """),
+            params,
+        )
+        rows = result.fetchall()
+        return [
+            ConflictSignalResponse(
+                id=r.id, layer=r.layer, conflict_id=r.conflict_id,
+                timestamp=r.timestamp, normalized_score=r.normalized_score,
+                alert_flag=r.alert_flag, alert_severity=r.alert_severity,
+                confidence=r.confidence, source_name=r.source_name,
+                content=r.content, deviation_pct=r.deviation_pct,
+            )
+            for r in rows
+        ]
+    return []

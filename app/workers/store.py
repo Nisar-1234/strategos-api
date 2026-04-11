@@ -12,6 +12,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.workers.badge_engine import compute_badge
+from app.workers.conflict_router import resolve as resolve_conflict
 
 logger = logging.getLogger("strategos.store")
 settings = get_settings()
@@ -38,6 +39,10 @@ def store_signals(signals: list[dict]) -> int:
         published: list[dict] = []
 
         for sig in signals:
+            # Auto-link to a conflict if not already tagged
+            if not sig.get("conflict_id"):
+                sig["conflict_id"] = resolve_conflict(sig)
+
             # Compute deviation badge before insert so it lands in DB
             deviation_pct, alert_severity = compute_badge(
                 layer=sig["layer"],
