@@ -121,10 +121,12 @@ async def compute_game_theory(request: GameTheoryRequest):
             text("""
                 SELECT normalized_score, alert_flag, confidence, layer, source_name
                 FROM signals
-                WHERE timestamp >= NOW() - INTERVAL '24 hours'
+                WHERE conflict_id = :cid
+                  AND timestamp >= NOW() - INTERVAL '24 hours'
                 ORDER BY timestamp DESC
                 LIMIT 200
             """),
+            {"cid": str(request.conflict_id)},
         )
         rows = result.fetchall()
         signals_data = [
