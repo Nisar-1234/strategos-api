@@ -47,54 +47,68 @@ celery_app.conf.update(
         "app.workers.convergence_worker.*": {"queue": "compute"},
         "app.workers.prediction_worker.*": {"queue": "compute"},
     },
+    # Prevents beat from flooding queues with backlogged tasks after a restart/crash
+    beat_max_loop_interval=5,
     beat_schedule={
         "ingest-l1-editorial": {
             "task": "app.workers.l1_editorial.ingest",
-            "schedule": 300.0,  # 5 minutes
+            "schedule": 300.0,
+            "options": {"expires": 270},
         },
         "ingest-l2-social": {
             "task": "app.workers.l2_social.ingest",
-            "schedule": 300.0,  # 5 minutes
+            "schedule": 300.0,
+            "options": {"expires": 270},
         },
         "ingest-l3-shipping": {
             "task": "app.workers.l3_shipping.ingest",
-            "schedule": 300.0,  # 5 minutes
+            "schedule": 300.0,
+            "options": {"expires": 270},
         },
         "ingest-l4-aviation": {
             "task": "app.workers.l4_aviation.ingest",
-            "schedule": 300.0,  # 5 minutes
+            "schedule": 300.0,
+            "options": {"expires": 270},
         },
         "ingest-l5-commodities": {
             "task": "app.workers.l5_commodities.ingest",
-            "schedule": 60.0,  # 1 minute
+            "schedule": 60.0,
+            "options": {"expires": 55},
         },
         "ingest-l6-currency": {
             "task": "app.workers.l6_currency.ingest",
-            "schedule": 300.0,  # 5 minutes
+            "schedule": 300.0,
+            "options": {"expires": 270},
         },
         "ingest-l7-equities": {
             "task": "app.workers.l7_equities.ingest",
-            "schedule": 60.0,  # 1 minute
+            "schedule": 60.0,
+            "options": {"expires": 55},
         },
         "ingest-l8-satellite": {
             "task": "app.workers.l8_satellite.ingest",
-            "schedule": 600.0,  # 10 minutes
+            "schedule": 600.0,
+            "options": {"expires": 540},
         },
         "ingest-l9-economic": {
             "task": "app.workers.l9_economic.ingest",
-            "schedule": 3600.0,  # 1 hour
+            "schedule": 3600.0,
+            "options": {"expires": 3300},
         },
         "ingest-l10-connectivity": {
             "task": "app.workers.l10_connectivity.ingest",
-            "schedule": 120.0,  # 2 minutes
+            "schedule": 120.0,
+            "options": {"expires": 110},
         },
         "compute-convergence-scores": {
             "task": "app.workers.convergence_worker.compute_all",
-            "schedule": 300.0,  # 5 minutes
+            "schedule": 300.0,
+            "options": {"expires": 270},
         },
         "compute-predictions": {
             "task": "app.workers.prediction_worker.compute_all",
-            "schedule": 600.0,  # 10 minutes
+            "schedule": 600.0,
+            "options": {"expires": 540},
         },
     },
 )
