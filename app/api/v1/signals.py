@@ -36,7 +36,7 @@ async def list_signals(
     layer: str | None = Query(None, description="Filter by layer (L1-L10)"),
     conflict_id: str | None = Query(None),
     alert_only: bool = Query(False, description="Show only ALERT/WATCH signals"),
-    limit: int = Query(50, le=200),
+    limit: int = Query(50, le=1000),
 ):
     """List signals with optional filters."""
     async for db in get_db():
